@@ -3,7 +3,8 @@ mod writer;
 use self::writer::WalWriter;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::Sender;
+use std::sync::{mpsc, Arc, Mutex};
 
 #[derive(Debug)]
 enum WalError {
@@ -11,9 +12,11 @@ enum WalError {
     File(String),
 }
 
+#[derive(Clone)]
 struct Wal {
     location: Arc<PathBuf>,
     buffer: Arc<Mutex<Vec<Vec<u8>>>>,
+    sender: Sender<()>,
 }
 
 impl Wal {
@@ -23,8 +26,16 @@ impl Wal {
                 "Capacity should be at least 100".to_string(),
             ));
         }
-        let writer = WalWriter::new(location, capacity);
-        todo!()
+        let location = PathBuf::from(location);
+        let (tx, rx) = mpsc::channel();
+        let writer = WalWriter::new(location.clone(), capacity, rx)?;
+        let buffer = writer.buffer();
+        std::thread::spawn(move || writer.run());
+        Ok(Self {
+            location: Arc::new(location),
+            buffer,
+            sender: tx,
+        })
     }
 
     /// Write a log
@@ -39,13 +50,25 @@ impl Wal {
                 return;
             }
         };
-        // obtain lock on the buffer
-        let mut lock = match self.buffer.lock() {
-            Ok(l) => l,
-            Err(e) => e.into_inner(),
-        };
-        // add entry to buffer
-        lock.push(encoded);
+        let mut notify = false;
+        // new scope for obtaining lock
+        {
+            // obtain lock on the buffer
+            let mut lock = match self.buffer.lock() {
+                Ok(l) => l,
+                Err(e) => e.into_inner(),
+            };
+            // check if WalWriter needs to be notified or not
+            if lock.is_empty() {
+                notify = true;
+            }
+            // add entry to buffer
+            lock.push(encoded);
+        }
+        // notify WalWriter
+        if notify {
+            let _ = self.sender.send(());
+        }
     }
 
     /// Batch write many logs
@@ -63,13 +86,25 @@ impl Wal {
         if data.is_empty() {
             return;
         }
-        // obtain lock on the buffer
-        let mut lock = match self.buffer.lock() {
-            Ok(l) => l,
-            Err(e) => e.into_inner(),
-        };
-        // add to buffer
-        lock.extend(data.into_iter());
+        let mut notify = false;
+        // new scope for obtaining lock
+        {
+            // obtain lock on the buffer
+            let mut lock = match self.buffer.lock() {
+                Ok(l) => l,
+                Err(e) => e.into_inner(),
+            };
+            // check if WalWriter needs to be notified or not
+            if lock.is_empty() {
+                notify = true;
+            }
+            // add to buffer
+            lock.extend(data.into_iter());
+        }
+        // notify WalWriter
+        if notify {
+            let _ = self.sender.send(());
+        }
     }
 
     /// Read all written logs

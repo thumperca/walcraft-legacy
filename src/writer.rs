@@ -3,13 +3,16 @@ use std::fmt::format;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, LockResult, Mutex};
 
 pub(crate) struct WalWriter {
     // shared buffer
     buffer: Arc<Mutex<Vec<Vec<u8>>>>,
     // Location where files are stored
     location: PathBuf,
+    // Notifier from Wal interface about new log addition
+    receiver: Receiver<()>,
     // Handle to current file
     file: File,
     // storage capacity per file
@@ -21,23 +24,45 @@ pub(crate) struct WalWriter {
 }
 
 impl WalWriter {
-    pub fn new(location: &str, capacity: usize) -> Result<Self, WalError> {
-        let base_path = PathBuf::from(location);
-
-        let buffer = Arc::new(Mutex::new(Vec::new()));
-
+    pub fn new(
+        location: PathBuf,
+        capacity: usize,
+        receiver: Receiver<()>,
+    ) -> Result<Self, WalError> {
         let pointer = 1u8;
-        let (file, filled) = Self::set_pointer(base_path.clone(), pointer)?;
-
+        let (file, filled) = Self::set_pointer(location.clone(), pointer)?;
         let wal = Self {
-            buffer,
-            location: base_path,
+            buffer: Arc::new(Mutex::new(Vec::new())),
+            location,
+            receiver,
             file,
             capacity_per_file: capacity / 5,
             filled,
             pointer,
         };
         Ok(wal)
+    }
+
+    pub fn buffer(&self) -> Arc<Mutex<Vec<Vec<u8>>>> {
+        self.buffer.clone()
+    }
+
+    pub fn run(self) {
+        loop {
+            // Wait for the notification of new logs
+            self.receiver.recv().unwrap();
+            // Open new scope for locking the queue
+            {
+                let buffer = match self.buffer.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                // If there is data, process it
+                if !buffer.is_empty() {
+                    println!("process data {}", buffer.len());
+                }
+            }
+        }
     }
 
     fn set_pointer(location: PathBuf, pointer: u8) -> Result<(File, usize), WalError> {
