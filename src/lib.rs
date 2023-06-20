@@ -127,6 +127,7 @@ impl Wal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::time::Duration;
 
     #[derive(Serialize, Deserialize, Debug)]
@@ -134,14 +135,31 @@ mod tests {
         id: usize,
     }
 
+    fn clear_storage() {
+        let mut paths = Vec::new();
+        paths.push("./tmp/meta".to_string());
+        for i in 1..6 {
+            paths.push(format!("./tmp/wal_{}", i));
+        }
+        for path in paths {
+            if Path::new(&path).exists() {
+                std::fs::remove_file(path).expect("Failed to delete old file");
+            }
+        }
+    }
+
     #[test]
-    fn it_works() {
-        let wal = Wal::new("./tmp/", 100).unwrap();
+    fn simple_write() {
+        clear_storage();
+        let wal = Wal::new("./tmp/", 10_000).unwrap();
         for i in 0..1000 {
             let item = Item { id: i };
             wal.write(item);
         }
         // allow some time for WalWriter to work
         std::thread::sleep(Duration::from_secs(2));
+        // check that log file exists
+        let metadata = std::fs::metadata("./tmp/wal_1").expect("Failed to read file");
+        assert!(metadata.len() > 5000); // at least 5KB of data is added
     }
 }
