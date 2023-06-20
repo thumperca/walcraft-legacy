@@ -32,11 +32,11 @@ impl WalWriter {
         let pointer = 1u8;
         let (file, filled) = Self::set_pointer(location.clone(), pointer)?;
         let wal = Self {
-            buffer: Arc::new(Mutex::new(Vec::new())),
+            buffer: Arc::new(Mutex::new(Vec::with_capacity(capacity))),
             location,
             receiver,
             file,
-            capacity_per_file: capacity / 5,
+            capacity_per_file: capacity / 4,
             filled,
             pointer,
         };
@@ -47,21 +47,28 @@ impl WalWriter {
         self.buffer.clone()
     }
 
-    pub fn run(self) {
+    pub fn run(mut self) {
         loop {
             // Wait for the notification of new logs
             self.receiver.recv().unwrap();
+            let data;
             // Open new scope for locking the queue
             {
-                let buffer = match self.buffer.lock() {
+                let mut buffer = match self.buffer.lock() {
                     Ok(g) => g,
                     Err(e) => e.into_inner(),
                 };
                 // If there is data, process it
-                if !buffer.is_empty() {
-                    println!("process data {}", buffer.len());
+                if buffer.is_empty() {
+                    continue;
                 }
+                data =
+                    std::mem::replace(&mut *buffer, Vec::with_capacity(self.capacity_per_file * 4));
             }
+            for item in data {
+                let _ = self.file.write_all(&item);
+            }
+            let _ = self.file.sync_all();
         }
     }
 

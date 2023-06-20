@@ -14,8 +14,11 @@ enum WalError {
 
 #[derive(Clone)]
 struct Wal {
+    // location of WAL files
     location: Arc<PathBuf>,
+    // Shared buffer to communicate with [WalWriter]
     buffer: Arc<Mutex<Vec<Vec<u8>>>>,
+    // A channel to alert [WalWriter] of new logs
     sender: Sender<()>,
 }
 
@@ -124,16 +127,21 @@ impl Wal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[derive(Serialize, Deserialize, Debug)]
     struct Item {
-        id: u8,
+        id: usize,
     }
 
     #[test]
     fn it_works() {
-        let item = Item { id: 1 };
         let wal = Wal::new("./tmp/", 100).unwrap();
-        wal.write(item);
+        for i in 0..1000 {
+            let item = Item { id: i };
+            wal.write(item);
+        }
+        // allow some time for WalWriter to work
+        std::thread::sleep(Duration::from_secs(2));
     }
 }
