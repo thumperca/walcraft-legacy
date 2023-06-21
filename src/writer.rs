@@ -29,7 +29,7 @@ impl WalWriter {
         receiver: Receiver<()>,
     ) -> Result<Self, WalError> {
         let pointer = 1u8;
-        let (file, filled) = Self::set_pointer(location.clone(), pointer)?;
+        let (file, filled) = Self::set_pointer(location.clone(), pointer, false)?;
         let wal = Self {
             buffer: Arc::new(Mutex::new(Vec::with_capacity(capacity))),
             location,
@@ -82,7 +82,7 @@ impl WalWriter {
             next_pointer = 1;
         }
         // Disk IO for the new pointer & file
-        let file = match Self::set_pointer(self.location.clone(), next_pointer) {
+        let file = match Self::set_pointer(self.location.clone(), next_pointer, true) {
             Ok((file, _)) => file,
             Err(_) => {
                 return;
@@ -94,11 +94,15 @@ impl WalWriter {
         self.filled = 0;
     }
 
-    fn set_pointer(location: PathBuf, pointer: u8) -> Result<(File, usize), WalError> {
+    fn set_pointer(
+        location: PathBuf,
+        pointer: u8,
+        delete: bool,
+    ) -> Result<(File, usize), WalError> {
         // write pointer to meta file
         Self::write_pointer(location.clone(), pointer)?;
         // open and return pointer WAL file
-        Self::open_file(location, pointer).map(|file| (file, 0))
+        Self::open_file(location, pointer, delete).map(|file| (file, 0))
     }
 
     fn write_pointer(mut location: PathBuf, pointer: u8) -> Result<(), WalError> {
@@ -120,9 +124,14 @@ impl WalWriter {
         Ok(())
     }
 
-    fn open_file(mut location: PathBuf, pointer: u8) -> Result<File, WalError> {
+    fn open_file(mut location: PathBuf, pointer: u8, delete: bool) -> Result<File, WalError> {
         let file_name = format!("wal_{}", pointer);
         location.push(file_name);
+        if delete {
+            if let Err(_) = File::create(location.clone()) {
+                return Err(WalError::File("Failed to clear old log file".to_string()));
+            }
+        }
         OpenOptions::new()
             .append(true)
             .create(true)
