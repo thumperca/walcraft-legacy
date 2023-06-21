@@ -133,11 +133,6 @@ where
         data.truncate(self.capacity);
         Ok(data)
     }
-
-    /// Clean or empty all existing logs
-    pub fn empty() {
-        todo!()
-    }
 }
 
 #[cfg(test)]

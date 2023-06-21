@@ -49,7 +49,7 @@ impl WalWriter {
     pub fn run(mut self) {
         loop {
             // Wait for the notification of new logs
-            self.receiver.recv().unwrap();
+            let _d = self.receiver.recv();
             let data;
             // Open new scope for locking the queue
             {
@@ -64,6 +64,7 @@ impl WalWriter {
                 data =
                     std::mem::replace(&mut *buffer, Vec::with_capacity(self.capacity_per_file * 4));
             }
+            dbg!(data.len());
             self.filled += data.len();
             for item in data {
                 let _ = self.file.write_all(&(item.len() as u32).to_ne_bytes());
