@@ -130,7 +130,10 @@ where
             })?;
             data.push(decoded);
         }
-        data.truncate(self.capacity);
+        if data.len() > self.capacity {
+            let cutoff = data.len() - self.capacity;
+            data = data.split_off(cutoff);
+        }
         Ok(data)
     }
 }
@@ -207,16 +210,16 @@ mod tests {
         // create a new wal object
         let wal = Wal::new("./tmp/", 1000).unwrap();
         // This shall be dumped to first file
-        let dump = (1..=30)
+        let dump = (1..=1234)
             .into_iter()
             .map(|i| Item { id: i })
             .collect::<Vec<_>>();
         wal.batch_write(&dump);
-        std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_secs(2));
         let data = wal.read();
         assert!(data.is_ok());
         let data = data.unwrap();
-        println!("data is {:?}", &data);
-        assert_eq!(data.len(), 30);
+        assert_eq!(data.len(), 1000);
+        assert_eq!(data.last().unwrap().id, 1234);
     }
 }
