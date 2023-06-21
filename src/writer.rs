@@ -66,6 +66,7 @@ impl WalWriter {
             }
             self.filled += data.len();
             for item in data {
+                let _ = self.file.write_all(&(item.len() as u32).to_ne_bytes());
                 let _ = self.file.write_all(&item);
             }
             let _ = self.file.sync_all();

@@ -1,7 +1,10 @@
+mod reader;
 mod writer;
 
+use self::reader::WalReader;
 use self::writer::WalWriter;
 use serde::{Deserialize, Serialize};
+use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::{mpsc, Arc, Mutex};
@@ -10,19 +13,29 @@ use std::sync::{mpsc, Arc, Mutex};
 pub enum WalError {
     Capacity(String),
     File(String),
+    Serialization(String),
 }
 
 #[derive(Clone)]
-pub struct Wal {
+pub struct Wal<T>
+where
+    T: Serialize + for<'a> Deserialize<'a>,
+{
     // location of WAL files
-    location: Arc<PathBuf>,
+    location: PathBuf,
+    // capacity of data
+    capacity: usize,
     // Shared buffer to communicate with [WalWriter]
     buffer: Arc<Mutex<Vec<Vec<u8>>>>,
     // A channel to alert [WalWriter] of new logs
     sender: Sender<()>,
+    phantom: PhantomData<T>,
 }
 
-impl Wal {
+impl<T> Wal<T>
+where
+    T: Serialize + for<'a> Deserialize<'a>,
+{
     pub fn new(location: &str, capacity: usize) -> Result<Self, WalError> {
         if capacity < 100 {
             return Err(WalError::Capacity(
@@ -35,17 +48,16 @@ impl Wal {
         let buffer = writer.buffer();
         std::thread::spawn(move || writer.run());
         Ok(Self {
-            location: Arc::new(location),
+            location,
             buffer,
+            capacity,
             sender: tx,
+            phantom: Default::default(),
         })
     }
 
     /// Write a log
-    pub fn write<T>(&self, entry: T)
-    where
-        T: Serialize + for<'a> Deserialize<'a>,
-    {
+    pub fn write(&self, entry: T) {
         // Serializing entry to binary
         let encoded = match bincode::serialize(&entry) {
             Ok(d) => d,
@@ -75,10 +87,7 @@ impl Wal {
     }
 
     /// Batch write many logs
-    pub fn batch_write<T>(&self, entries: &[T])
-    where
-        T: Serialize + for<'a> Deserialize<'a>,
-    {
+    pub fn batch_write(&self, entries: &[T]) {
         // serialize to binary
         let mut data = Vec::with_capacity(entries.len());
         for entry in entries {
@@ -111,11 +120,18 @@ impl Wal {
     }
 
     /// Read all written logs
-    pub fn read<T>() -> Vec<T>
-    where
-        T: Serialize + for<'a> Deserialize<'a>,
-    {
-        todo!()
+    pub fn read(&self) -> Result<Vec<T>, WalError> {
+        let reader = WalReader::new(self.location.clone());
+        let buffer = reader.read()?;
+        let mut data = Vec::with_capacity(buffer.len());
+        for item in buffer {
+            let decoded = bincode::deserialize(&item).map_err(|_| {
+                WalError::Serialization("Failed to serialize item from binary data".to_string())
+            })?;
+            data.push(decoded);
+        }
+        data.truncate(self.capacity);
+        Ok(data)
     }
 
     /// Clean or empty all existing logs
@@ -132,7 +148,7 @@ mod tests {
 
     #[derive(Serialize, Deserialize, Debug)]
     struct Item {
-        id: usize,
+        id: u16,
     }
 
     fn clear_storage() {
@@ -188,5 +204,24 @@ mod tests {
         assert!(metadata1.len() > 200); // at least 200 bytes of data is added
         let metadata2 = std::fs::metadata("./tmp/wal_2").expect("Failed to read file2");
         assert!(metadata2.len() > 10 && metadata2.len() < 100); // more than 10 bytes of data
+    }
+
+    #[test]
+    fn read_after_write() {
+        clear_storage();
+        // create a new wal object
+        let wal = Wal::new("./tmp/", 1000).unwrap();
+        // This shall be dumped to first file
+        let dump = (1..=30)
+            .into_iter()
+            .map(|i| Item { id: i })
+            .collect::<Vec<_>>();
+        wal.batch_write(&dump);
+        std::thread::sleep(Duration::from_secs(1));
+        let data = wal.read();
+        assert!(data.is_ok());
+        let data = data.unwrap();
+        println!("data is {:?}", &data);
+        assert_eq!(data.len(), 30);
     }
 }
