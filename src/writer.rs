@@ -1,10 +1,9 @@
 use crate::WalError;
-use std::fmt::format;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, LockResult, Mutex};
+use std::sync::{Arc, Mutex};
 
 pub(crate) struct WalWriter {
     // shared buffer
@@ -65,11 +64,34 @@ impl WalWriter {
                 data =
                     std::mem::replace(&mut *buffer, Vec::with_capacity(self.capacity_per_file * 4));
             }
+            self.filled += data.len();
             for item in data {
                 let _ = self.file.write_all(&item);
             }
             let _ = self.file.sync_all();
+            if self.filled >= self.capacity_per_file {
+                self.next_file();
+            }
         }
+    }
+
+    fn next_file(&mut self) {
+        // calculate next pointer
+        let mut next_pointer = self.pointer + 1;
+        if next_pointer > 5 {
+            next_pointer = 1;
+        }
+        // Disk IO for the new pointer & file
+        let file = match Self::set_pointer(self.location.clone(), next_pointer) {
+            Ok((file, _)) => file,
+            Err(_) => {
+                return;
+            }
+        };
+        // update state
+        self.file = file;
+        self.pointer = next_pointer;
+        self.filled = 0;
     }
 
     fn set_pointer(location: PathBuf, pointer: u8) -> Result<(File, usize), WalError> {

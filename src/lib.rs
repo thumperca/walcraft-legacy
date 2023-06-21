@@ -7,13 +7,13 @@ use std::sync::mpsc::Sender;
 use std::sync::{mpsc, Arc, Mutex};
 
 #[derive(Debug)]
-enum WalError {
+pub enum WalError {
     Capacity(String),
     File(String),
 }
 
 #[derive(Clone)]
-struct Wal {
+pub struct Wal {
     // location of WAL files
     location: Arc<PathBuf>,
     // Shared buffer to communicate with [WalWriter]
@@ -161,5 +161,32 @@ mod tests {
         // check that log file exists
         let metadata = std::fs::metadata("./tmp/wal_1").expect("Failed to read file");
         assert!(metadata.len() > 5000); // at least 5KB of data is added
+    }
+
+    #[test]
+    fn multiple_files() {
+        // clear existing files
+        clear_storage();
+        // create a new wal object
+        let wal = Wal::new("./tmp/", 100).unwrap();
+        // This shall be dumped to first file
+        let dump = (1..=30)
+            .into_iter()
+            .map(|i| Item { id: i })
+            .collect::<Vec<_>>();
+        wal.batch_write(&dump);
+        // This shall be dumped to second file
+        let dump = (40..=45)
+            .into_iter()
+            .map(|i| Item { id: i })
+            .collect::<Vec<_>>();
+        wal.batch_write(&dump);
+        // allow some time for WalWriter to work
+        std::thread::sleep(Duration::from_secs(2));
+        // check that log file exists
+        let metadata1 = std::fs::metadata("./tmp/wal_1").expect("Failed to read file1");
+        assert!(metadata1.len() > 200); // at least 200 bytes of data is added
+        let metadata2 = std::fs::metadata("./tmp/wal_2").expect("Failed to read file2");
+        assert!(metadata2.len() > 10 && metadata2.len() < 100); // more than 10 bytes of data
     }
 }
