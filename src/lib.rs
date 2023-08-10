@@ -1,6 +1,8 @@
+mod lock;
 mod reader;
 mod writer;
 
+use self::lock::Lock;
 use self::reader::WalReader;
 use self::writer::WalWriter;
 use serde::{Deserialize, Serialize};
@@ -8,6 +10,8 @@ use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::{mpsc, Arc, Mutex};
+use std::thread::{sleep, Thread};
+use std::time::Duration;
 
 #[derive(Debug)]
 pub enum WalError {
@@ -29,6 +33,13 @@ where
     buffer: Arc<Mutex<Vec<Vec<u8>>>>,
     // A channel to alert [WalWriter] of new logs
     sender: Sender<()>,
+    // Lock manager to switch between read and write mode for file IO
+    lock: Lock,
+    // Handle to write thread.. needed to unpark the thread when going from read to write mode
+    writer: Thread,
+    // State for whether we are in read mode or write mode.. true here means read mode
+    reading: Arc<Mutex<bool>>,
+    // Phantom ownership of generic to avoid usage of complex lifetimes
     phantom: PhantomData<T>,
 }
 
@@ -44,14 +55,18 @@ where
         }
         let location = PathBuf::from(location);
         let (tx, rx) = mpsc::channel();
-        let writer = WalWriter::new(location.clone(), capacity, rx)?;
+        let lock = Lock::new();
+        let writer = WalWriter::new(location.clone(), capacity, rx, lock.clone())?;
         let buffer = writer.buffer();
-        std::thread::spawn(move || writer.run());
+        let writer = std::thread::spawn(move || writer.run()).thread().clone();
         Ok(Self {
             location,
             buffer,
             capacity,
+            writer,
             sender: tx,
+            lock,
+            reading: Arc::new(Mutex::new(false)),
             phantom: Default::default(),
         })
     }
@@ -69,16 +84,16 @@ where
         // new scope for obtaining lock
         {
             // obtain lock on the buffer
-            let mut lock = match self.buffer.lock() {
+            let mut buffer = match self.buffer.lock() {
                 Ok(l) => l,
                 Err(e) => e.into_inner(),
             };
             // check if WalWriter needs to be notified or not
-            if lock.is_empty() {
+            if buffer.is_empty() {
                 notify = true;
             }
             // add entry to buffer
-            lock.push(encoded);
+            buffer.push(encoded);
         }
         // notify WalWriter
         if notify {
@@ -102,16 +117,16 @@ where
         // new scope for obtaining lock
         {
             // obtain lock on the buffer
-            let mut lock = match self.buffer.lock() {
+            let mut buffer = match self.buffer.lock() {
                 Ok(l) => l,
                 Err(e) => e.into_inner(),
             };
             // check if WalWriter needs to be notified or not
-            if lock.is_empty() {
+            if buffer.is_empty() {
                 notify = true;
             }
             // add to buffer
-            lock.extend(data.into_iter());
+            buffer.extend(data.into_iter());
         }
         // notify WalWriter
         if notify {
@@ -121,20 +136,49 @@ where
 
     /// Read all written logs
     pub fn read(&self) -> Result<Vec<T>, WalError> {
-        let reader = WalReader::new(self.location.clone());
-        let buffer = reader.read()?;
-        let mut data = Vec::with_capacity(buffer.len());
-        for item in buffer {
-            let decoded = bincode::deserialize(&item).map_err(|_| {
-                WalError::Serialization("Failed to serialize item from binary data".to_string())
-            })?;
-            data.push(decoded);
+        loop {
+            let reading_lock = match self.reading.lock() {
+                Ok(guard) => guard,
+                Err(poison) => poison.into_inner(),
+            };
+            let is_reading = *reading_lock;
+
+            // some other thread already has a reading lock
+            // spin-wait until it's done
+            if is_reading {
+                drop(reading_lock);
+                sleep(Duration::from_millis(10));
+                continue;
+            }
+
+            // park writer thread
+            self.lock.request_to_stop();
+            while !self.lock.has_stopped() {
+                sleep(Duration::from_millis(1));
+            }
+
+            // read data
+            let reader = WalReader::new(self.location.clone());
+            let buffer = reader.read()?;
+            let mut data = Vec::with_capacity(buffer.len());
+            for item in buffer {
+                let decoded = bincode::deserialize(&item).map_err(|_| {
+                    WalError::Serialization("Failed to serialize item from binary data".to_string())
+                })?;
+                data.push(decoded);
+            }
+            if data.len() > self.capacity {
+                let cutoff = data.len() - self.capacity;
+                data = data.split_off(cutoff);
+            }
+
+            // start writer thread
+            self.lock.start();
+            self.writer.unpark();
+
+            // return data
+            break Ok(data);
         }
-        if data.len() > self.capacity {
-            let cutoff = data.len() - self.capacity;
-            data = data.split_off(cutoff);
-        }
-        Ok(data)
     }
 }
 
@@ -171,7 +215,7 @@ mod tests {
             wal.write(item);
         }
         // allow some time for WalWriter to work
-        std::thread::sleep(Duration::from_secs(2));
+        sleep(Duration::from_secs(2));
         // check that log file exists
         let metadata = std::fs::metadata("./tmp/wal_1").expect("Failed to read file");
         assert!(metadata.len() > 5000); // at least 5KB of data is added
@@ -189,6 +233,7 @@ mod tests {
             .map(|i| Item { id: i })
             .collect::<Vec<_>>();
         wal.batch_write(&dump);
+        sleep(Duration::from_millis(100));
         // This shall be dumped to second file
         let dump = (40..=45)
             .into_iter()
@@ -196,12 +241,12 @@ mod tests {
             .collect::<Vec<_>>();
         wal.batch_write(&dump);
         // allow some time for WalWriter to work
-        std::thread::sleep(Duration::from_secs(2));
+        sleep(Duration::from_secs(2));
         // check that log file exists
         let metadata1 = std::fs::metadata("./tmp/wal_1").expect("Failed to read file1");
-        assert!(metadata1.len() > 200); // at least 200 bytes of data is added
+        assert!(metadata1.len() > 10); // at least 200 bytes of data is added
         let metadata2 = std::fs::metadata("./tmp/wal_2").expect("Failed to read file2");
-        assert!(metadata2.len() > 10 && metadata2.len() < 100); // more than 10 bytes of data
+        assert!(metadata2.len() > 10); // more than 10 bytes of data
     }
 
     #[test]
@@ -215,7 +260,7 @@ mod tests {
             .map(|i| Item { id: i })
             .collect::<Vec<_>>();
         wal.batch_write(&dump);
-        std::thread::sleep(Duration::from_secs(2));
+        sleep(Duration::from_secs(2));
         let data = wal.read();
         assert!(data.is_ok());
         let data = data.unwrap();

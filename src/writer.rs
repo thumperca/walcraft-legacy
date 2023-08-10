@@ -1,9 +1,12 @@
+use crate::lock::Lock;
 use crate::WalError;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
+use std::thread::sleep;
+use std::time::Duration;
 
 pub(crate) struct WalWriter {
     // shared buffer
@@ -14,6 +17,8 @@ pub(crate) struct WalWriter {
     receiver: Receiver<()>,
     // Handle to current file
     file: File,
+    // Lock manager to switch between read and write mode for file IO
+    lock: Lock,
     // storage capacity per file
     capacity_per_file: usize,
     // storage capacity filled in the current file
@@ -27,6 +32,7 @@ impl WalWriter {
         location: PathBuf,
         capacity: usize,
         receiver: Receiver<()>,
+        lock: Lock,
     ) -> Result<Self, WalError> {
         let pointer = 1u8;
         let (file, filled) = Self::set_pointer(location.clone(), pointer, false)?;
@@ -35,6 +41,7 @@ impl WalWriter {
             location,
             receiver,
             file,
+            lock,
             capacity_per_file: capacity / 4,
             filled,
             pointer,
@@ -48,6 +55,11 @@ impl WalWriter {
 
     pub fn run(mut self) {
         loop {
+            // spin lock, until allowed to write
+            if !self.lock.can_write() {
+                sleep(Duration::from_millis(10));
+                continue;
+            }
             // Wait for the notification of new logs
             let _d = self.receiver.recv();
             let data;
@@ -73,6 +85,10 @@ impl WalWriter {
             let _ = self.file.sync_all();
             if self.filled >= self.capacity_per_file {
                 self.next_file();
+            }
+            //
+            if !self.lock.can_write() {
+                self.lock.stop();
             }
         }
     }
