@@ -1,7 +1,9 @@
+mod entry;
 mod lock;
 mod reader;
 mod writer;
 
+use self::entry::LogEntry;
 use self::lock::Lock;
 use self::reader::WalReader;
 use self::writer::WalWriter;
@@ -30,7 +32,7 @@ where
     // capacity of data
     capacity: usize,
     // Shared buffer to communicate with [WalWriter]
-    buffer: Arc<Mutex<Vec<Vec<u8>>>>,
+    buffer: Arc<Mutex<Vec<LogEntry>>>,
     // A channel to alert [WalWriter] of new logs
     sender: Sender<()>,
     // Lock manager to switch between read and write mode for file IO
@@ -74,11 +76,9 @@ where
     /// Write a log
     pub fn write(&self, entry: T) {
         // Serializing entry to binary
-        let encoded = match bincode::serialize(&entry) {
-            Ok(d) => d,
-            Err(_) => {
-                return;
-            }
+        let entry = match LogEntry::new(entry) {
+            None => return,
+            Some(e) => e,
         };
         let mut notify = false;
         // new scope for obtaining lock
@@ -93,7 +93,7 @@ where
                 notify = true;
             }
             // add entry to buffer
-            buffer.push(encoded);
+            buffer.push(entry);
         }
         // notify WalWriter
         if notify {
@@ -102,11 +102,11 @@ where
     }
 
     /// Batch write many logs
-    pub fn batch_write(&self, entries: &[T]) {
+    pub fn batch_write(&self, entries: Vec<T>) {
         // serialize to binary
         let mut data = Vec::with_capacity(entries.len());
         for entry in entries {
-            if let Ok(d) = bincode::serialize(&entry) {
+            if let Some(d) = LogEntry::new(entry) {
                 data.push(d);
             }
         }
@@ -162,10 +162,9 @@ where
             let buffer = reader.read()?;
             let mut data = Vec::with_capacity(buffer.len());
             for item in buffer {
-                let decoded = bincode::deserialize(&item).map_err(|_| {
-                    WalError::Serialization("Failed to serialize item from binary data".to_string())
-                })?;
-                data.push(decoded);
+                if let Some(d) = item.to_original() {
+                    data.push(d);
+                }
             }
             if data.len() > self.capacity {
                 let cutoff = data.len() - self.capacity;
@@ -232,14 +231,14 @@ mod tests {
             .into_iter()
             .map(|i| Item { id: i })
             .collect::<Vec<_>>();
-        wal.batch_write(&dump);
+        wal.batch_write(dump);
         sleep(Duration::from_millis(100));
         // This shall be dumped to second file
         let dump = (40..=45)
             .into_iter()
             .map(|i| Item { id: i })
             .collect::<Vec<_>>();
-        wal.batch_write(&dump);
+        wal.batch_write(dump);
         // allow some time for WalWriter to work
         sleep(Duration::from_secs(2));
         // check that log file exists
@@ -259,7 +258,7 @@ mod tests {
             .into_iter()
             .map(|i| Item { id: i })
             .collect::<Vec<_>>();
-        wal.batch_write(&dump);
+        wal.batch_write(dump);
         sleep(Duration::from_secs(2));
         let data = wal.read();
         assert!(data.is_ok());

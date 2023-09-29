@@ -1,5 +1,5 @@
 use crate::lock::Lock;
-use crate::WalError;
+use crate::{LogEntry, WalError};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -10,7 +10,7 @@ use std::time::Duration;
 
 pub(crate) struct WalWriter {
     // shared buffer
-    buffer: Arc<Mutex<Vec<Vec<u8>>>>,
+    buffer: Arc<Mutex<Vec<LogEntry>>>,
     // Location where files are stored
     location: PathBuf,
     // Notifier from Wal interface about new log addition
@@ -49,7 +49,7 @@ impl WalWriter {
         Ok(wal)
     }
 
-    pub fn buffer(&self) -> Arc<Mutex<Vec<Vec<u8>>>> {
+    pub fn buffer(&self) -> Arc<Mutex<Vec<LogEntry>>> {
         self.buffer.clone()
     }
 
@@ -79,10 +79,9 @@ impl WalWriter {
             dbg!(data.len());
             self.filled += data.len();
             for item in data {
-                let _ = self.file.write_all(&(item.len() as u32).to_ne_bytes());
-                let _ = self.file.write_all(&item);
+                let _ = self.file.write_all(&item.to_vec());
             }
-            let _ = self.file.sync_all();
+            // let _ = self.file.sync_all(); // todo: make this toggleable
             if self.filled >= self.capacity_per_file {
                 self.next_file();
             }

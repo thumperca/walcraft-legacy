@@ -1,6 +1,6 @@
-use crate::{Wal, WalError};
+use crate::{LogEntry, WalError};
 use std::fs::OpenOptions;
-use std::io::{BufReader, Read};
+use std::io::Read;
 use std::path::PathBuf;
 
 pub(crate) struct WalReader {
@@ -12,7 +12,7 @@ impl WalReader {
         Self { location }
     }
 
-    pub fn read(&self) -> Result<Vec<Vec<u8>>, WalError> {
+    pub fn read(&self) -> Result<Vec<LogEntry>, WalError> {
         let pointer = self.current_pointer()?;
         let read_order = Self::read_order(pointer);
         let mut buffer = vec![];
@@ -23,7 +23,7 @@ impl WalReader {
                 path.push(file_name);
                 if let Ok(mut file) = OpenOptions::new().read(true).open(path) {
                     file.read_to_end(&mut buffer)
-                        .map_err(|e| WalError::File("Failed to read file".to_string()))?;
+                        .map_err(|_| WalError::File("Failed to read file".to_string()))?;
                 }
             }
         }
@@ -39,7 +39,7 @@ impl WalReader {
             let size = u32::from_ne_bytes(bytes) as usize;
             let end = offset + 4 + size;
             let d = Vec::from(&buffer[offset + 4..end]);
-            data.push(d);
+            data.push(LogEntry::from_vec(d));
             offset = end;
         }
         Ok(data)
