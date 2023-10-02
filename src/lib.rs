@@ -4,7 +4,7 @@ mod reader;
 mod writer;
 
 use self::entry::LogEntry;
-use self::lock::Lock;
+use self::lock::LockManager;
 use self::reader::WalReader;
 use self::writer::WalWriter;
 use serde::{Deserialize, Serialize};
@@ -36,7 +36,7 @@ where
     // A channel to alert [WalWriter] of new logs
     sender: Sender<()>,
     // Lock manager to switch between read and write mode for file IO
-    lock: Lock,
+    lock: LockManager,
     // Handle to write thread.. needed to unpark the thread when going from read to write mode
     writer: Thread,
     // State for whether we are in read mode or write mode.. true here means read mode
@@ -57,7 +57,7 @@ where
         }
         let location = PathBuf::from(location);
         let (tx, rx) = mpsc::channel();
-        let lock = Lock::new();
+        let lock = LockManager::new();
         let writer = WalWriter::new(location.clone(), capacity, rx, lock.clone())?;
         let buffer = writer.buffer();
         let writer = std::thread::spawn(move || writer.run()).thread().clone();

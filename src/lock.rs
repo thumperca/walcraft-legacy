@@ -18,12 +18,12 @@ impl LockInner {
 }
 
 #[derive(Clone)]
-pub(crate) struct Lock {
+pub(crate) struct LockManager {
     inner: Arc<LockInner>,
 }
 
 // todo: change ordering to ensure proper synchronization between threads
-impl Lock {
+impl LockManager {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(LockInner::new()),

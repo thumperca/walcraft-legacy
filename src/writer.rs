@@ -1,4 +1,4 @@
-use crate::lock::Lock;
+use crate::lock::LockManager;
 use crate::{LogEntry, WalError};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -18,7 +18,7 @@ pub(crate) struct WalWriter {
     // Handle to current file
     file: File,
     // Lock manager to switch between read and write mode for file IO
-    lock: Lock,
+    lock: LockManager,
     // storage capacity per file
     capacity_per_file: usize,
     // storage capacity filled in the current file
@@ -32,7 +32,7 @@ impl WalWriter {
         location: PathBuf,
         capacity: usize,
         receiver: Receiver<()>,
-        lock: Lock,
+        lock: LockManager,
     ) -> Result<Self, WalError> {
         let pointer = 1u8;
         let (file, filled) = Self::set_pointer(location.clone(), pointer, false)?;
