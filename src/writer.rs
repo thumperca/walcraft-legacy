@@ -1,16 +1,16 @@
+use crate::buffer::Buffer;
 use crate::lock::LockManager;
-use crate::{LogEntry, WalError};
+use crate::WalError;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
 
 pub(crate) struct WalWriter {
     // shared buffer
-    buffer: Arc<Mutex<Vec<LogEntry>>>,
+    buffer: Buffer,
     // Location where files are stored
     location: PathBuf,
     // Notifier from Wal interface about new log addition
@@ -33,11 +33,12 @@ impl WalWriter {
         capacity: usize,
         receiver: Receiver<()>,
         lock: LockManager,
+        buffer: Buffer,
     ) -> Result<Self, WalError> {
         let pointer = 1u8;
         let (file, filled) = Self::set_pointer(location.clone(), pointer, false)?;
         let wal = Self {
-            buffer: Arc::new(Mutex::new(Vec::with_capacity(capacity))),
+            buffer,
             location,
             receiver,
             file,
@@ -49,10 +50,6 @@ impl WalWriter {
         Ok(wal)
     }
 
-    pub fn buffer(&self) -> Arc<Mutex<Vec<LogEntry>>> {
-        self.buffer.clone()
-    }
-
     pub fn run(mut self) {
         loop {
             // spin lock, until allowed to write
@@ -62,19 +59,9 @@ impl WalWriter {
             }
             // Wait for the notification of new logs
             let _d = self.receiver.recv();
-            let data;
-            // Open new scope for locking the queue
-            {
-                let mut buffer = match self.buffer.lock() {
-                    Ok(g) => g,
-                    Err(e) => e.into_inner(),
-                };
-                // If there is data, process it
-                if buffer.is_empty() {
-                    continue;
-                }
-                data =
-                    std::mem::replace(&mut *buffer, Vec::with_capacity(self.capacity_per_file * 4));
+            let data = self.buffer.drain();
+            if data.is_empty() {
+                continue;
             }
             dbg!(data.len());
             self.filled += data.len();

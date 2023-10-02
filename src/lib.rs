@@ -1,8 +1,10 @@
+mod buffer;
 mod entry;
 mod lock;
 mod reader;
 mod writer;
 
+use self::buffer::Buffer;
 use self::entry::LogEntry;
 use self::lock::LockManager;
 use self::reader::WalReader;
@@ -38,7 +40,7 @@ pub enum WalError {
 /// use walcraft::Wal;
 ///
 /// // Log to write
-/// #[derive(Serialize, Deserialize)]
+/// #[derive(Serialize, Deserialize, Clone)]
 /// struct Log {
 ///     id: usize,
 ///     value: f64
@@ -46,7 +48,7 @@ pub enum WalError {
 /// let log = Log {id: 1, value: 5.6234};
 ///
 /// // initiate wal and add a log
-/// let wal = Wal::new("/tmp/logs/", 500); // 500MB of log capacity
+/// let wal = Wal::new("./tmp/", 500).unwrap(); // 500MB of log capacity
 /// wal.write(log); // write a log
 ///
 /// // write a log in another thread
@@ -71,7 +73,7 @@ where
     // capacity of data
     capacity: usize, // todo: remove this field as this shall be managed by the writer
     // Shared buffer to communicate with [WalWriter]
-    buffer: Arc<Mutex<Vec<LogEntry>>>,
+    buffer: Buffer,
     // A channel to alert [WalWriter] of new logs
     sender: Sender<()>,
     // Lock manager to switch between read and write mode for file IO
@@ -96,9 +98,9 @@ where
     ///
     /// # Examples
     /// The code below creates a WAL at location `/tmp/` for 2GB
-    /// ```
+    /// ```rust,ignore
     /// use walcraft::Wal;
-    /// let wal = Wal::new("/tmp/", 2_000);
+    /// let wal = Wal::new("./tmp/", 2_000);
     /// ```
     ///
     pub fn new(location: &str, capacity: usize) -> Result<Self, WalError> {
@@ -109,9 +111,10 @@ where
         }
         let location = PathBuf::from(location);
         let (tx, rx) = mpsc::channel();
+        let buffer = Buffer::new();
+
         let lock = LockManager::new();
-        let writer = WalWriter::new(location.clone(), capacity, rx, lock.clone())?;
-        let buffer = writer.buffer();
+        let writer = WalWriter::new(location.clone(), capacity, rx, lock.clone(), buffer.clone())?;
         let writer = std::thread::spawn(move || writer.run()).thread().clone();
         Ok(Self {
             location,
@@ -142,7 +145,7 @@ where
     /// let log2 = Log {id: 13, value: 0.3484};
     ///
     /// // create wal and add a log
-    /// let wal = Wal::new("/tmp/wal/", 500);
+    /// let wal = Wal::new("./tmp/", 500).unwrap();
     /// wal.write(log1);
     /// wal.write(log2);
     /// ```
@@ -153,22 +156,9 @@ where
             None => return,
             Some(e) => e,
         };
-        let mut notify = false;
-        // new scope for obtaining lock
-        {
-            // obtain lock on the buffer
-            let mut buffer = match self.buffer.lock() {
-                Ok(l) => l,
-                Err(e) => e.into_inner(),
-            };
-            // check if WalWriter needs to be notified or not
-            if buffer.is_empty() {
-                notify = true;
-            }
-            // add entry to buffer
-            buffer.push(entry);
-        }
-        // notify WalWriter
+        // add log to buffer
+        let notify = self.buffer.add(entry);
+        // notify writer thread
         if notify {
             let _ = self.sender.send(());
         }
@@ -192,7 +182,7 @@ where
     /// let logs = vec![log1, log2];
     ///
     /// // create wal and add a log
-    /// let wal = Wal::new("/tmp/wal/", 500);
+    /// let wal = Wal::new("./tmp/", 500).unwrap();
     /// wal.batch_write(logs);
     /// ```
     ///
@@ -207,22 +197,9 @@ where
         if data.is_empty() {
             return;
         }
-        let mut notify = false;
-        // new scope for obtaining lock
-        {
-            // obtain lock on the buffer
-            let mut buffer = match self.buffer.lock() {
-                Ok(l) => l,
-                Err(e) => e.into_inner(),
-            };
-            // check if WalWriter needs to be notified or not
-            if buffer.is_empty() {
-                notify = true;
-            }
-            // add to buffer
-            buffer.extend(data.into_iter());
-        }
-        // notify WalWriter
+        // add logs to buffer
+        let notify = self.buffer.bulk_add(data);
+        // notify writer thread
         if notify {
             let _ = self.sender.send(());
         }
@@ -236,6 +213,7 @@ where
     //    `for item in wal.iter() {}`
     pub fn read(&self) -> Result<Vec<T>, WalError> {
         loop {
+            // acquire read lock
             let reading_lock = match self.reading.lock() {
                 Ok(guard) => guard,
                 Err(poison) => poison.into_inner(),
