@@ -81,7 +81,7 @@ where
     // Handle to write thread.. needed to unpark the thread when going from read to write mode
     writer: Thread,
     // State for whether we are in read mode or write mode.. true here means read mode
-    reading: Arc<Mutex<bool>>,
+    read_lock: Arc<Mutex<()>>,
     // Phantom ownership of generic to avoid usage of complex lifetimes
     phantom: PhantomData<T>,
 }
@@ -123,7 +123,7 @@ where
             writer,
             sender: tx,
             lock,
-            reading: Arc::new(Mutex::new(false)),
+            read_lock: Arc::new(Mutex::new(())),
             phantom: Default::default(),
         })
     }
@@ -214,19 +214,7 @@ where
     pub fn read(&self) -> Result<Vec<T>, WalError> {
         loop {
             // acquire read lock
-            let reading_lock = match self.reading.lock() {
-                Ok(guard) => guard,
-                Err(poison) => poison.into_inner(),
-            };
-            let is_reading = *reading_lock;
-
-            // some other thread already has a reading lock
-            // spin-wait until it's done
-            if is_reading {
-                drop(reading_lock);
-                sleep(Duration::from_millis(10));
-                continue;
-            }
+            let _ = self.read_lock.lock();
 
             // park writer thread
             self.lock.request_to_stop();
