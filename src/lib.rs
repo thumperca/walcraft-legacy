@@ -49,6 +49,19 @@ impl<T> Wal<T>
 where
     T: Serialize + for<'a> Deserialize<'a>,
 {
+    /// Create a new WAL instance
+    ///
+    /// # Arguments
+    /// - `location`: The location on storage where to store WAL files
+    /// - `capacity`: The size of WAL on storage in MBs
+    ///
+    /// # Examples
+    /// The code below creates a WAL at location `/tmp/` for 2GB
+    /// ```
+    /// use walcraft::Wal;
+    /// let wal = Wal::new("/tmp/", 2_000);
+    /// ```
+    ///
     pub fn new(location: &str, capacity: usize) -> Result<Self, WalError> {
         if capacity < 100 {
             return Err(WalError::Capacity(
@@ -73,7 +86,28 @@ where
         })
     }
 
-    /// Write a log
+    /// Write an item to log
+    ///
+    /// # Example
+    /// ```
+    /// use serde::{Deserialize, Serialize};
+    /// use walcraft::Wal;
+    ///
+    /// // Log to write
+    /// #[derive(Serialize, Deserialize)]
+    /// struct Log {
+    ///     id: usize,
+    ///     value: f64
+    /// }
+    /// let log1 = Log {id: 12, value: 5.6234};
+    /// let log2 = Log {id: 13, value: 0.3484};
+    ///
+    /// // create wal and add a log
+    /// let wal = Wal::new("/tmp/wal/", 500);
+    /// wal.write(log1);
+    /// wal.write(log2);
+    /// ```
+    ///
     pub fn write(&self, entry: T) {
         // Serializing entry to binary
         let entry = match LogEntry::new(entry) {
@@ -101,7 +135,28 @@ where
         }
     }
 
-    /// Batch write many logs
+    /// Batch write many logs in a single step
+    ///
+    /// # Example
+    /// ```
+    /// use serde::{Deserialize, Serialize};
+    /// use walcraft::Wal;
+    ///
+    /// // Log to write
+    /// #[derive(Serialize, Deserialize)]
+    /// struct Log {
+    ///     id: usize,
+    ///     value: f64
+    /// }
+    /// let log1 = Log {id: 12, value: 5.6234};
+    /// let log2 = Log {id: 13, value: 0.3484};
+    /// let logs = vec![log1, log2];
+    ///
+    /// // create wal and add a log
+    /// let wal = Wal::new("/tmp/wal/", 500);
+    /// wal.batch_write(logs);
+    /// ```
+    ///
     pub fn batch_write(&self, entries: Vec<T>) {
         // serialize to binary
         let mut data = Vec::with_capacity(entries.len());
@@ -135,6 +190,7 @@ where
     }
 
     /// Read all written logs
+    // ToDo: do this functionality via `iter()` method
     pub fn read(&self) -> Result<Vec<T>, WalError> {
         loop {
             let reading_lock = match self.reading.lock() {
