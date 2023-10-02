@@ -22,6 +22,45 @@ pub enum WalError {
     Serialization(String),
 }
 
+/// A Write Ahead Log (WAL) solution for concurrent operations
+///
+/// # How?
+/// This library gives atomic guarantees in concurrent environments and high performance/throughput
+/// by using in-memory buffer and leveraging append-only logs. The library spawns a dedicated log
+/// writing thread that is parked when read operations happen.
+///
+/// The logs are split across multiple files. The older files are deleted to preserve the capacity constraints.
+///
+///
+/// # Usage
+/// ```
+/// use serde::{Deserialize, Serialize};
+/// use walcraft::Wal;
+///
+/// // Log to write
+/// #[derive(Serialize, Deserialize)]
+/// struct Log {
+///     id: usize,
+///     value: f64
+/// }
+/// let log = Log {id: 1, value: 5.6234};
+///
+/// // initiate wal and add a log
+/// let wal = Wal::new("/tmp/logs/", 500); // 500MB of log capacity
+/// wal.write(log); // write a log
+///
+/// // write a log in another thread
+/// let wal2 = wal.clone();
+/// std::thread::spawn(move || {
+///     let log = Log{id: 2, value: 0.45};
+///     wal2.write(log);
+/// });
+///
+/// // keep writing logs in current thread
+/// let log = Log{id: 3, value: 123.59};
+/// wal.write(log);
+/// ```
+///
 #[derive(Clone)]
 pub struct Wal<T>
 where
@@ -30,7 +69,7 @@ where
     // location of WAL files
     location: PathBuf,
     // capacity of data
-    capacity: usize,
+    capacity: usize, // todo: remove this field as this shall be managed by the writer
     // Shared buffer to communicate with [WalWriter]
     buffer: Arc<Mutex<Vec<LogEntry>>>,
     // A channel to alert [WalWriter] of new logs
@@ -190,7 +229,11 @@ where
     }
 
     /// Read all written logs
-    // ToDo: do this functionality via `iter()` method
+    // ToDo: update this method as below and add an `iter()` method
+    // 1. This an also be changed to read last 'x' amount of logs
+    //    such as wal.read(10_000) read last 10k entries
+    // 2. Add iter() method that will provide an iterator over all items in array
+    //    `for item in wal.iter() {}`
     pub fn read(&self) -> Result<Vec<T>, WalError> {
         loop {
             let reading_lock = match self.reading.lock() {
