@@ -58,27 +58,38 @@ impl WalWriter {
         loop {
             // spin lock, until allowed to write
             if !self.lock.can_write() {
-                sleep(Duration::from_millis(10));
+                sleep(Duration::from_millis(1));
                 continue;
             }
+
             // Wait for the notification of new logs
             let _d = self.receiver.recv();
+
+            // take all existing logs from buffer
             let data = self.buffer.drain();
             if data.is_empty() {
                 continue;
             }
             dbg!(data.len());
+
+            // write data to disk
+            let data = data
+                .into_iter()
+                .flat_map(|d| d.to_vec())
+                .collect::<Vec<_>>();
+            let _ = self.file.write_all(&data);
+            // let _ = self.file.sync_all(); // disabling 'fsync' feature
+
+            // handle file logic
             self.filled += data.len();
-            for item in data {
-                let _ = self.file.write_all(&item.to_vec());
-            }
-            // let _ = self.file.sync_all(); // todo: make this toggleable
             if self.filled >= self.capacity_per_file {
                 self.next_file();
             }
-            //
+
+            // signal LockManager of parking
             if !self.lock.can_write() {
                 self.lock.stop();
+                std::thread::park();
             }
         }
     }
