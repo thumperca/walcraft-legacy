@@ -8,7 +8,7 @@ use self::buffer::Buffer;
 use self::entry::LogEntry;
 use self::lock::LockManager;
 use self::reader::WalReader;
-use self::writer::WalWriter;
+use self::writer::{WalWriter, WalWriterProps};
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::path::PathBuf;
@@ -112,10 +112,20 @@ where
         let location = PathBuf::from(location);
         let (tx, rx) = mpsc::channel();
         let buffer = Buffer::new();
-
         let lock = LockManager::new();
-        let writer = WalWriter::new(location.clone(), capacity, rx, lock.clone(), buffer.clone())?;
+
+        // start writer thread
+        let props = WalWriterProps {
+            buffer: buffer.clone(),
+            location: location.clone(),
+            receiver: rx,
+            lock: lock.clone(),
+            capacity,
+        };
+        let writer = WalWriter::new(props)?;
         let writer = std::thread::spawn(move || writer.run()).thread().clone();
+
+        // return WAL handle
         Ok(Self {
             location,
             buffer,
@@ -206,11 +216,15 @@ where
     }
 
     /// Read all written logs
-    // ToDo: update this method as below and add an `iter()` method
-    // 1. This an also be changed to read last 'x' amount of logs
-    //    such as wal.read(10_000) read last 10k entries
-    // 2. Add iter() method that will provide an iterator over all items in array
-    //    `for item in wal.iter() {}`
+    //  ToDo: update this method as below and add an `iter()` method
+    //  1. This an also be changed to read last 'x' amount of logs
+    //     such as wal.read(10_000) read last 10k entries
+    //     The files shall be read in the reverse order of what they are written
+    //     This will best preserve the last 'x' logs
+    //     Also some logs shall come from the buffer as well?
+    //  2. Add iter() method that will provide an iterator over all items in array
+    //     `for item in wal.iter() {}`
+    //
     pub fn read(&self) -> Result<Vec<T>, WalError> {
         loop {
             // acquire read lock

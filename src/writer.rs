@@ -8,6 +8,17 @@ use std::sync::mpsc::Receiver;
 use std::thread::sleep;
 use std::time::Duration;
 
+// Arguments or properties needed to create a [WalWriter] instance
+pub(crate) struct WalWriterProps {
+    pub buffer: Buffer,
+    pub location: PathBuf,
+    pub receiver: Receiver<()>,
+    pub lock: LockManager,
+    pub capacity: usize,
+}
+
+// Writer responsible for saving logs on secondary storage
+// The WalWriter takes logs from the buffer and appends them to log files
 pub(crate) struct WalWriter {
     // shared buffer
     buffer: Buffer,
@@ -28,26 +39,19 @@ pub(crate) struct WalWriter {
 }
 
 impl WalWriter {
-    pub fn new(
-        location: PathBuf,
-        capacity: usize,
-        receiver: Receiver<()>,
-        lock: LockManager,
-        buffer: Buffer,
-    ) -> Result<Self, WalError> {
+    pub fn new(props: WalWriterProps) -> Result<Self, WalError> {
         let pointer = 1u8;
-        let (file, filled) = Self::set_pointer(location.clone(), pointer, false)?;
-        let wal = Self {
-            buffer,
-            location,
-            receiver,
+        let (file, filled) = Self::set_pointer(props.location.clone(), pointer, false)?;
+        Ok(Self {
+            buffer: props.buffer,
+            location: props.location,
+            receiver: props.receiver,
             file,
-            lock,
-            capacity_per_file: capacity / 4,
+            lock: props.lock,
+            capacity_per_file: props.capacity / 4,
             filled,
             pointer,
-        };
-        Ok(wal)
+        })
     }
 
     pub fn run(mut self) {
